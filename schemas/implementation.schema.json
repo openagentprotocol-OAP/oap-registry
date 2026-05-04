@@ -30,8 +30,8 @@
     "manifest_uri": { "type": "string", "format": "uri" },
     "conformance_level": {
       "type": "string",
-      "pattern": "^L[0-5](-NC)?$",
-      "description": "Highest claimed Conformance Level."
+      "pattern": "^L[0-5](-NC|-FINANCE)?$",
+      "description": "Highest claimed Conformance Level. Suffix -NC denotes the Non-Commercial Profile (RFC 0025); suffix -FINANCE denotes the L5-FINANCE Tier (RFC 0028)."
     },
     "conformance_receipt_uri": { "type": "string", "format": "uri" },
     "conformance_receipt_sha256": {
