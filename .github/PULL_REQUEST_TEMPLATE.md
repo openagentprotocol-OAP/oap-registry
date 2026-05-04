@@ -17,4 +17,4 @@
 
 ## Re-issuance? Revocation?
 
-If this PR is re-issuing an existing listing, link the PR that added the previous Receipt. If this PR is revoking a Receipt, follow the revocation format in RFC 0026 Section 5 instead and submit under `revocations/`.
+If this PR is re-issuing an existing listing, link the PR that added the previous Receipt. If this PR is revoking a Receipt, do NOT modify any file under `implementations/`. Instead add a single file under `revocations/` named `<slug>-<receipt-sha256>.json` matching `schemas/revocation.schema.json` (see [revocations/README.md](../revocations/README.md)). The CI `revocations` job will verify the signature path (self-revocation against your DID, or three independent live L4+ peer-witness signatures for forced revocation), and will then reject any active listing whose Receipt the revocation invalidates.

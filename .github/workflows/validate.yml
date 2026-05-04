@@ -28,11 +28,17 @@ jobs:
           const path = require('path');
           const ajv = new Ajv2020({ allErrors: true, strict: false });
           addFormats(ajv);
-          const schema = JSON.parse(fs.readFileSync('schemas/implementation.schema.json', 'utf-8'));
-          const validate = ajv.compile(schema);
+          const implSchema = JSON.parse(fs.readFileSync('schemas/implementation.schema.json', 'utf-8'));
+          const revSchema = JSON.parse(fs.readFileSync('schemas/revocation.schema.json', 'utf-8'));
+          const validators = {
+            implementations: ajv.compile(implSchema),
+            'peer-witnesses': ajv.compile(implSchema),
+            revocations: ajv.compile(revSchema),
+          };
           let failed = 0;
-          for (const dir of ['implementations', 'peer-witnesses']) {
+          for (const dir of Object.keys(validators)) {
             if (!fs.existsSync(dir)) continue;
+            const validate = validators[dir];
             for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.json'))) {
               const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
               if (!validate(data)) {
@@ -301,6 +307,159 @@ jobs:
               }
             }
             if (failed) process.exit(1);
+          })();
+          NODE
+
+  revocations:
+    runs-on: ubuntu-latest
+    needs: schema
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Verify revocation signatures and reject listings whose Receipt has been revoked
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('node:crypto');
+          if (!fs.existsSync('revocations')) { console.log('No revocations/ directory; nothing to check.'); process.exit(0); }
+
+          // Same canonicaliser used by reference attest.js and the
+          // signature-verify job. Recursive, sorted keys at every depth.
+          function canonicalize(obj) {
+            if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+            if (Array.isArray(obj)) return '[' + obj.map(canonicalize).join(',') + ']';
+            const keys = Object.keys(obj).sort();
+            return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalize(obj[k])).join(',') + '}';
+          }
+          function canonicalRevocation(r) {
+            const { signature, peer_witness_signatures, ...rest } = r;
+            return canonicalize(rest);
+          }
+
+          // Ed25519 raw 32-byte JWK -> Node KeyObject.
+          const ED25519_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+          function jwkToKey(jwk) {
+            if (!jwk || jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || !jwk.x) return null;
+            const raw = Buffer.from(jwk.x, 'base64url');
+            if (raw.length !== 32) return null;
+            return crypto.createPublicKey({ key: Buffer.concat([ED25519_PREFIX, raw]), format: 'der', type: 'spki' });
+          }
+
+          async function fetchDidDoc(did) {
+            if (!did.startsWith('did:web:')) return null;
+            const host = decodeURIComponent(did.slice('did:web:'.length).split(':').join('/'));
+            const r = await fetch(`https://${host}/.well-known/did.json`, { signal: AbortSignal.timeout(10000) });
+            if (!r.ok) return null;
+            return r.json();
+          }
+
+          async function verifyAgainstDid(message, sigBytes, did) {
+            const doc = await fetchDidDoc(did);
+            if (!doc) return false;
+            for (const vm of (doc.verificationMethod || [])) {
+              const key = jwkToKey(vm.publicKeyJwk);
+              if (!key) continue;
+              if (crypto.verify(null, message, key, sigBytes)) return true;
+            }
+            return false;
+          }
+
+          function controllerKey(did) {
+            if (!did) return '';
+            const parts = did.split(':');
+            if (parts.length < 3) return did;
+            if (parts[1] === 'web') return parts[2];
+            return `${parts[0]}:${parts[1]}`;
+          }
+
+          // Index live implementations by their conformance_receipt_sha256.
+          const implByHash = new Map();
+          if (fs.existsSync('implementations')) {
+            for (const f of fs.readdirSync('implementations').filter(x => x.endsWith('.json'))) {
+              const l = JSON.parse(fs.readFileSync(path.join('implementations', f), 'utf-8'));
+              implByHash.set(l.conformance_receipt_sha256, { file: f, listing: l });
+            }
+          }
+
+          // Index local L4+ implementations for forced-revocation peer-witness lookup.
+          const liveL4Plus = new Map();
+          if (fs.existsSync('implementations')) {
+            for (const f of fs.readdirSync('implementations').filter(x => x.endsWith('.json'))) {
+              const l = JSON.parse(fs.readFileSync(path.join('implementations', f), 'utf-8'));
+              if (/^L[45]/.test(l.conformance_level || '') && l.expires_at && new Date(l.expires_at) > new Date()) {
+                liveL4Plus.set(l.tool_did, l);
+              }
+            }
+          }
+
+          (async () => {
+            let failed = 0;
+            const revokedHashes = new Map();
+
+            for (const f of fs.readdirSync('revocations').filter(x => x.endsWith('.json'))) {
+              const rev = JSON.parse(fs.readFileSync(path.join('revocations', f), 'utf-8'));
+              const message = Buffer.from(canonicalRevocation(rev), 'utf-8');
+
+              // Path A: self-revocation. The signature MUST verify against the
+              // revoked_by_did's DID Document. By RFC 0026 Section 5 the
+              // revoked_by_did MUST equal the listing's tool_did for the
+              // self-revocation path; verifying against that DID enforces both.
+              const sigBytes = Buffer.from(rev.signature.value, 'base64url');
+              const selfOk = await verifyAgainstDid(message, sigBytes, rev.revoked_by_did);
+
+              // Path B: forced (Quorum) revocation by three or more peer
+              // witnesses, none from the same controller.
+              let quorumOk = false;
+              const pw = Array.isArray(rev.peer_witness_signatures) ? rev.peer_witness_signatures : [];
+              if (pw.length >= 3) {
+                const dids = new Set(pw.map(x => x.witness_did));
+                const ctls = new Set(pw.map(x => controllerKey(x.witness_did)));
+                if (dids.size >= 3 && ctls.size >= 3) {
+                  let verified = 0;
+                  for (const w of pw) {
+                    if (!liveL4Plus.has(w.witness_did)) continue;
+                    const wsig = Buffer.from(w.value, 'base64url');
+                    if (await verifyAgainstDid(message, wsig, w.witness_did)) verified++;
+                  }
+                  quorumOk = verified >= 3;
+                }
+              }
+
+              if (!selfOk && !quorumOk) {
+                console.error(`FAIL revocations/${f}: signature does not verify against ${rev.revoked_by_did}, and forced-revocation Quorum (>=3 independent live L4+ peer witnesses) was not met`);
+                failed++;
+                continue;
+              }
+
+              const filenameOk = f.startsWith(`${rev.slug}-`) && f.endsWith('.json');
+              if (!filenameOk) {
+                console.error(`FAIL revocations/${f}: filename must be <slug>-<receipt-hash>.json`);
+                failed++;
+                continue;
+              }
+
+              const revokedAt = Date.parse(rev.revoked_at);
+              if (Number.isNaN(revokedAt)) { console.error(`FAIL revocations/${f}: revoked_at is not a parseable date-time`); failed++; continue; }
+
+              if (revokedAt <= Date.now()) {
+                revokedHashes.set(rev.revoked_receipt_sha256, { file: f, rev });
+              }
+              console.log(`OK   revocations/${f}: ${rev.reason} via ${selfOk ? 'self-signature' : 'Quorum'} (effective ${rev.revoked_at})`);
+            }
+
+            // Reject any active listing whose Receipt is revoked.
+            for (const [hash, { file, rev }] of revokedHashes) {
+              const impl = implByHash.get(hash);
+              if (impl) {
+                console.error(`FAIL implementations/${impl.file}: this listing\'s Receipt (sha256=${hash}) was revoked by revocations/${file} at ${rev.revoked_at}. Re-run attest.js, publish a new Receipt at a new URL, and update this listing.`);
+                failed++;
+              }
+            }
+
+            if (failed) process.exit(1);
+            console.log(`Revocation evaluator: ${revokedHashes.size} effective revocation(s) processed, no active listing affected.`);
           })();
           NODE
 

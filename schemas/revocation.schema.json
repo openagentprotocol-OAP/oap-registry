@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openagentprotocol.eu/registry/schemas/revocation.schema.json",
+  "title": "OAP Registry Revocation Entry",
+  "description": "Schema for an entry in revocations/<slug>-<receipt-hash>.json. Defined in RFC 0026 Section 5.",
+  "type": "object",
+  "required": [
+    "slug",
+    "revoked_receipt_sha256",
+    "reason",
+    "revoked_at",
+    "revoked_by_did",
+    "signature"
+  ],
+  "properties": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,63}$",
+      "description": "Slug of the implementation whose Receipt is being revoked. MUST match an existing implementations/<slug>.json file."
+    },
+    "revoked_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the bytes of the Receipt being revoked. MUST match the conformance_receipt_sha256 of a current or historical listing."
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "key_compromise",
+        "manifest_non_conformance",
+        "superseded",
+        "voluntary_withdrawal",
+        "dispute_resolved_against"
+      ],
+      "description": "Cause of revocation per RFC 0026 Section 5."
+    },
+    "evidence_uri": {
+      "type": "string",
+      "format": "uri",
+      "description": "Optional public link explaining the revocation (incident report, dispute outcome, supersession notice)."
+    },
+    "revoked_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the revocation took effect. Verifiers MUST treat the revoked Receipt as invalid for any timestamp at or after this moment."
+    },
+    "revoked_by_did": {
+      "type": "string",
+      "pattern": "^did:(web|key):[a-zA-Z0-9._:-]+$",
+      "description": "DID that signed this revocation. MUST equal the listing's tool_did for self-revocation, OR a peer-witness DID for forced (Quorum) revocation."
+    },
+    "signature": {
+      "type": "object",
+      "description": "Ed25519 signature over the canonical JSON of this revocation with the signature field removed.",
+      "required": ["alg", "value", "by"],
+      "properties": {
+        "alg": { "type": "string", "enum": ["EdDSA"] },
+        "value": { "type": "string", "minLength": 1 },
+        "by": { "type": "string", "description": "verificationMethod id used to produce the signature." }
+      },
+      "additionalProperties": false
+    },
+    "peer_witness_signatures": {
+      "type": "array",
+      "description": "Required for forced (Quorum) revocation: at least three peer-witness signatures from current L4+ implementations, no two from the same controlling organization.",
+      "items": {
+        "type": "object",
+        "required": ["witness_did", "alg", "value"],
+        "properties": {
+          "witness_did": { "type": "string", "pattern": "^did:(web|key):[a-zA-Z0-9._:-]+$" },
+          "alg": { "type": "string", "enum": ["EdDSA"] },
+          "value": { "type": "string", "minLength": 1 },
+          "by": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
