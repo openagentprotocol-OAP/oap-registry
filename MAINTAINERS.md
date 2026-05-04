@@ -4,7 +4,7 @@ Maintainers of `oap-registry` are recruited from the [`oap-spec` Maintainer rost
 
 | GitHub handle | Organization | Term started |
 |---|---|---|
-| `@till-fengler` | BEEP Technologies UG | 2026-05 |
+| _(bootstrap roster, see the `@openagentprotocol-OAP/maintainers` GitHub team)_ | OAP Foundation | 2026-05 |
 
 ## Bootstrap
 
