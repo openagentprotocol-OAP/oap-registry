@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openagentprotocol.eu/registry/schemas/implementation.schema.json",
+  "title": "OAP Registry Implementation Listing",
+  "description": "Schema for an entry in implementations/<slug>.json. Defined in RFC 0026.",
+  "type": "object",
+  "required": [
+    "slug",
+    "name",
+    "tool_did",
+    "manifest_uri",
+    "conformance_level",
+    "conformance_receipt_uri",
+    "conformance_receipt_sha256",
+    "issued_at",
+    "expires_at"
+  ],
+  "properties": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,63}$",
+      "description": "Lowercase, hyphen-separated identifier; matches the filename without .json."
+    },
+    "name": { "type": "string", "minLength": 2, "maxLength": 80 },
+    "tool_did": {
+      "type": "string",
+      "pattern": "^did:(web|key):[a-zA-Z0-9._:-]+$",
+      "description": "Decentralized identifier of the implementation. did:web is preferred."
+    },
+    "manifest_uri": { "type": "string", "format": "uri" },
+    "conformance_level": {
+      "type": "string",
+      "pattern": "^L[0-5](-NC)?$",
+      "description": "Highest claimed Conformance Level."
+    },
+    "conformance_receipt_uri": { "type": "string", "format": "uri" },
+    "conformance_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the exact bytes served at conformance_receipt_uri."
+    },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Receipt expiry; max 90 days after issued_at per RFC 0019."
+    },
+    "open_source": { "type": "string", "format": "uri" },
+    "license": { "type": "string", "description": "SPDX identifier for the implementation source license." },
+    "non_commercial": { "type": "boolean", "default": false },
+    "provisional": {
+      "type": "boolean",
+      "default": false,
+      "description": "Set to true when the DID domain is younger than 30 days. Provisional listings are excluded from default Marketplace results until the 30-day mark."
+    },
+    "contact": { "type": "string", "format": "email" },
+    "categories": { "type": "array", "items": { "type": "string" } },
+    "jurisdictions": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z]{2}$" } }
+  },
+  "additionalProperties": false
+}

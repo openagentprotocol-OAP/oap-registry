@@ -1,0 +1,38 @@
+# OAP Registry repository configuration
+
+This file documents the GitHub repository settings that the registry depends on. A scheduled CI job (TODO) will compare actual repo settings to this file and alert if they drift.
+
+## Branch protection: main
+
+* Force push: disabled
+* History rewriting: disabled
+* Direct push: disabled (PR-only)
+* Required status checks (all must pass before merge):
+  - `validate / schema`
+  - `validate / receipts`
+  - `validate / manifest`
+  - `validate / did-resolution`
+  - `validate / sybil-filter`
+  - `validate / append-only`
+* Require pull request reviews before merging: 1 Maintainer
+* Dismiss stale pull request approvals when new commits are pushed: yes
+* Require review from Code Owners: not used (Maintainer roster lives in MAINTAINERS.md)
+* Require signed commits: yes (recommended)
+* Require linear history: yes
+* Require deployments to succeed before merging: not used
+* Lock branch: no (allows merging via PRs only)
+* Allow force pushes: no
+* Allow deletions: no
+
+## Repository visibility
+
+* Public.
+
+## Issues, Discussions
+
+* Issues: enabled (for revocation requests, dispute reports).
+* Discussions: enabled (categories: q-and-a, witness-coordination, governance).
+
+## Topics
+
+`oap`, `open-agent-protocol`, `conformance`, `transparency-log`, `registry`.

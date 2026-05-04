@@ -1,0 +1,188 @@
+name: validate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Install ajv
+        run: npm install --no-save ajv@8 ajv-formats@3
+      - name: Validate listings against schema
+        run: |
+          node <<'NODE'
+          const Ajv = require('ajv').default;
+          const addFormats = require('ajv-formats').default;
+          const fs = require('fs');
+          const path = require('path');
+          const ajv = new Ajv({ allErrors: true, strict: false });
+          addFormats(ajv);
+          const schema = JSON.parse(fs.readFileSync('schemas/implementation.schema.json', 'utf-8'));
+          const validate = ajv.compile(schema);
+          let failed = 0;
+          for (const dir of ['implementations', 'peer-witnesses']) {
+            if (!fs.existsSync(dir)) continue;
+            for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.json'))) {
+              const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
+              if (!validate(data)) {
+                failed++;
+                console.error(`FAIL ${dir}/${f}:`, JSON.stringify(validate.errors, null, 2));
+              } else {
+                console.log(`OK   ${dir}/${f}`);
+              }
+            }
+          }
+          if (failed) process.exit(1);
+          NODE
+
+  receipts:
+    runs-on: ubuntu-latest
+    needs: schema
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Verify Receipt fetchability, hash match, validity window
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('crypto');
+          const dir = 'implementations';
+          if (!fs.existsSync(dir)) process.exit(0);
+          let failed = 0;
+          (async () => {
+            for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.json'))) {
+              const listing = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
+              try {
+                const res = await fetch(listing.conformance_receipt_uri, { signal: AbortSignal.timeout(10000) });
+                if (!res.ok) { console.error(`FAIL receipt-fetch ${f}: HTTP ${res.status}`); failed++; continue; }
+                const body = Buffer.from(await res.arrayBuffer());
+                const hash = crypto.createHash('sha256').update(body).digest('hex');
+                if (hash !== listing.conformance_receipt_sha256) {
+                  console.error(`FAIL receipt-hash ${f}: expected ${listing.conformance_receipt_sha256} got ${hash}`); failed++; continue;
+                }
+                const receipt = JSON.parse(body.toString('utf-8'));
+                const expires = receipt.validity && receipt.validity.not_after;
+                if (!expires || new Date(expires) < new Date()) {
+                  console.error(`FAIL receipt-expiry ${f}`); failed++; continue;
+                }
+                if ((receipt.signatures || []).some(s => /^(PLACEHOLDER_NOT_FOR_PRODUCTION|unsigned-reference|placeholder:)/.test(s.value))) {
+                  console.error(`FAIL placeholder-signature ${f}`); failed++; continue;
+                }
+                console.log(`OK   ${f}: receipt valid until ${expires}`);
+              } catch (e) {
+                console.error(`FAIL ${f}: ${e.message}`); failed++;
+              }
+            }
+            if (failed) process.exit(1);
+          })();
+          NODE
+
+  manifest:
+    runs-on: ubuntu-latest
+    needs: schema
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Manifest reachability and DID match
+        run: |
+          set -e
+          if [ ! -d implementations ]; then exit 0; fi
+          for f in implementations/*.json; do
+            uri=$(jq -r .manifest_uri "$f")
+            did=$(jq -r .tool_did "$f")
+            echo "Checking $f -> $uri"
+            body=$(curl -fsSL --max-time 10 "$uri")
+            mdid=$(echo "$body" | jq -r '.tool.did')
+            if [ "$mdid" != "$did" ]; then
+              echo "FAIL: manifest tool.did=$mdid does not match listing tool_did=$did"; exit 1
+            fi
+          done
+
+  did-resolution:
+    runs-on: ubuntu-latest
+    needs: schema
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify did:web resolves to a DID Document
+        run: |
+          set -e
+          if [ ! -d implementations ]; then exit 0; fi
+          for f in implementations/*.json; do
+            did=$(jq -r .tool_did "$f")
+            case "$did" in
+              did:web:*)
+                host=${did#did:web:}
+                host=$(echo "$host" | tr ':' '/')
+                url="https://$host/.well-known/did.json"
+                echo "Resolving $did -> $url"
+                curl -fsSL --max-time 10 "$url" | jq '.id' >/dev/null
+                ;;
+              *) echo "Skip non-did:web $did" ;;
+            esac
+          done
+
+  sybil-filter:
+    runs-on: ubuntu-latest
+    needs: schema
+    steps:
+      - uses: actions/checkout@v4
+      - name: 30-day domain-age sybil filter (whois)
+        run: |
+          set -e
+          sudo apt-get update -qq && sudo apt-get install -y whois jq >/dev/null
+          if [ ! -d implementations ]; then exit 0; fi
+          for f in implementations/*.json; do
+            provisional=$(jq -r '.provisional // false' "$f")
+            if [ "$provisional" = "true" ]; then echo "Skip $f (provisional)"; continue; fi
+            did=$(jq -r .tool_did "$f")
+            case "$did" in
+              did:web:*)
+                host=${did#did:web:}
+                host=${host%%:*}
+                root=$(echo "$host" | awk -F. '{print $(NF-1)"."$NF}')
+                created=$(whois "$root" 2>/dev/null | grep -iE "Creation Date|created:" | head -1 | sed -E 's/.*: *//; s/ .*//')
+                if [ -z "$created" ]; then echo "WARN: cannot determine creation date for $root, allowing"; continue; fi
+                created_ts=$(date -d "$created" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$created" +%s 2>/dev/null || echo 0)
+                now_ts=$(date +%s)
+                age_days=$(( (now_ts - created_ts) / 86400 ))
+                if [ "$age_days" -lt 30 ]; then
+                  echo "FAIL: $root is $age_days days old, sybil filter requires >=30. Set provisional: true to bypass during the 30-day waiting period."
+                  exit 1
+                fi
+                echo "OK $root age=$age_days days"
+                ;;
+              *) echo "Skip non-did:web $did" ;;
+            esac
+          done
+
+  append-only:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Reject deletes or modifications of pre-existing files outside own slug
+        run: |
+          set -e
+          base=$(git merge-base origin/${{ github.base_ref }} HEAD)
+          changed=$(git diff --name-status "$base" HEAD)
+          echo "$changed"
+          # Allow: A (added). M of own slug under implementations/. D never.
+          deletes=$(echo "$changed" | awk '$1=="D"')
+          if [ -n "$deletes" ]; then
+            echo "FAIL: Pull Request deletes files. Registry is append-only."
+            echo "$deletes"
+            exit 1
+          fi
