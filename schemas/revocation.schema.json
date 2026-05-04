@@ -30,7 +30,9 @@
         "manifest_non_conformance",
         "superseded",
         "voluntary_withdrawal",
-        "dispute_resolved_against"
+        "dispute_resolved_against",
+        "failed_safety_eval",
+        "frontier_capability_misuse"
       ],
       "description": "Cause of revocation per RFC 0026 Section 5."
     },
