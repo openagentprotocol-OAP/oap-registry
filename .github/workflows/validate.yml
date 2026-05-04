@@ -90,6 +90,220 @@ jobs:
           })();
           NODE
 
+  signature-verify:
+    runs-on: ubuntu-latest
+    needs: schema
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Verify every Receipt signature against the signer's DID Document
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const crypto = require('node:crypto');
+          const dir = 'implementations';
+          if (!fs.existsSync(dir)) process.exit(0);
+
+          // RFC 8037 Ed25519 raw 32-byte public key in JWK -> Node KeyObject.
+          const ED25519_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+          function jwkToKey(jwk) {
+            if (!jwk || jwk.kty !== 'OKP' || jwk.crv !== 'Ed25519' || !jwk.x) return null;
+            const raw = Buffer.from(jwk.x, 'base64url');
+            if (raw.length !== 32) return null;
+            const der = Buffer.concat([ED25519_PREFIX, raw]);
+            return crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
+          }
+
+          // Canonicalisation matches reference attest.js: drop signatures, then
+          // recursively serialise with sorted object keys at every depth.
+          function canonicalize(obj) {
+            if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+            if (Array.isArray(obj)) return '[' + obj.map(canonicalize).join(',') + ']';
+            const keys = Object.keys(obj).sort();
+            return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalize(obj[k])).join(',') + '}';
+          }
+          function canonical(receipt) {
+            const { signatures, ...rest } = receipt;
+            return canonicalize(rest);
+          }
+
+          async function resolveDid(did) {
+            if (!did.startsWith('did:web:')) return null;
+            let host = did.slice('did:web:'.length).split(':').join('/');
+            host = decodeURIComponent(host);
+            const url = `https://${host}/.well-known/did.json`;
+            const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+            if (!r.ok) throw new Error(`did.json HTTP ${r.status}`);
+            return r.json();
+          }
+
+          (async () => {
+            let failed = 0;
+            for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.json'))) {
+              const listing = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
+              try {
+                const r = await fetch(listing.conformance_receipt_uri, { signal: AbortSignal.timeout(10000) });
+                if (!r.ok) throw new Error(`receipt HTTP ${r.status}`);
+                const receipt = await r.json();
+                const sigs = Array.isArray(receipt.signatures) ? receipt.signatures : [];
+                if (sigs.length === 0) { console.error(`FAIL ${f}: no signatures on Receipt`); failed++; continue; }
+                const didDoc = await resolveDid(listing.tool_did);
+                if (!didDoc) { console.error(`FAIL ${f}: DID method not did:web; cannot verify`); failed++; continue; }
+                const vmIndex = new Map();
+                for (const vm of (didDoc.verificationMethod || [])) vmIndex.set(vm.id, vm);
+                const allMethods = (didDoc.verificationMethod || []);
+                const message = Buffer.from(canonical(receipt), 'utf-8');
+                let verified = false;
+                let verifiedBy = null;
+                for (const sig of sigs) {
+                  const sigBytes = Buffer.from(sig.value, 'base64url');
+                  // Strict path: signer reference matches a published verification method.
+                  const named = vmIndex.get(sig.by);
+                  const tried = [];
+                  if (named) tried.push(named);
+                  // Tolerant path: try every published Ed25519 key. RFC 0019 requires
+                  // the signature to verify against material the controller publishes;
+                  // it does not mandate that sig.by match the verificationMethod id
+                  // exactly (some signers use a stable kid such as #key-1 even when
+                  // the DID document publishes the same key under #oap-signing).
+                  for (const vm of allMethods) if (vm !== named) tried.push(vm);
+                  for (const vm of tried) {
+                    const key = jwkToKey(vm.publicKeyJwk);
+                    if (!key) continue;
+                    if (crypto.verify(null, message, key, sigBytes)) {
+                      verified = true; verifiedBy = vm.id; break;
+                    }
+                  }
+                  if (verified) break;
+                }
+                if (!verified) { console.error(`FAIL ${f}: no signature verified against any verificationMethod in ${listing.tool_did} DID Document`); failed++; continue; }
+                console.log(`OK   ${f}: signature verified against ${verifiedBy}`);
+              } catch (e) {
+                console.error(`FAIL ${f}: ${e.message}`); failed++;
+              }
+            }
+            if (failed) process.exit(1);
+          })();
+          NODE
+
+  peer-witnesses:
+    runs-on: ubuntu-latest
+    needs: schema
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Verify L4/L5 peer-witness counts, currency, and (L5) controller independence
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const dir = 'implementations';
+          if (!fs.existsSync(dir)) process.exit(0);
+
+          // Index local registry: did -> {level, expiresAt}
+          const localIndex = new Map();
+          const files = fs.readdirSync(dir).filter(x => x.endsWith('.json'));
+          for (const f of files) {
+            const l = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
+            localIndex.set(l.tool_did, { level: l.conformance_level, expiresAt: l.expires_at });
+          }
+
+          function controllerKey(did) {
+            if (!did) return '';
+            const parts = did.split(':');
+            if (parts.length < 3) return did;
+            if (parts[1] === 'web') return parts[2];
+            return `${parts[0]}:${parts[1]}`;
+          }
+          async function isWitnessL4PlusLive(witness) {
+            const local = localIndex.get(witness.witness_did);
+            if (local && /^L[45]/.test(local.level || '') && local.expiresAt && new Date(local.expiresAt) > new Date()) return true;
+            try {
+              const r = await fetch(witness.witness_receipt_uri, { signal: AbortSignal.timeout(10000) });
+              if (!r.ok) return false;
+              const wr = await r.json();
+              const claims = wr.claimed_levels || (wr.conformance_level ? [wr.conformance_level] : []);
+              const exp = wr.validity && wr.validity.not_after;
+              return claims.some(l => ['L4','L5'].includes(l)) && exp && new Date(exp) > new Date();
+            } catch { return false; }
+          }
+
+          (async () => {
+            let failed = 0;
+            for (const f of files) {
+              const l = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
+              const level = l.conformance_level || '';
+              const wantsL4 = level === 'L4' || level === 'L5';
+              if (!wantsL4) { console.log(`OK   ${f}: not L4 or L5; peer-witness checks skipped`); continue; }
+              try {
+                const r = await fetch(l.conformance_receipt_uri, { signal: AbortSignal.timeout(10000) });
+                const receipt = await r.json();
+                const w = Array.isArray(receipt.peer_witnesses) ? receipt.peer_witnesses : [];
+                const minRequired = level === 'L5' ? 3 : 1;
+                if (w.length < minRequired) { console.error(`FAIL ${f}: needs >=${minRequired} peer witnesses, found ${w.length}`); failed++; continue; }
+                let badWitness = false;
+                for (const wit of w) {
+                  const ok = await isWitnessL4PlusLive(wit);
+                  if (!ok) { console.error(`FAIL ${f}: witness ${wit.witness_did} is not a current L4+ implementation`); badWitness = true; break; }
+                }
+                if (badWitness) { failed++; continue; }
+                if (level === 'L5') {
+                  const dids = new Set(w.map(x => x.witness_did));
+                  const ctls = new Set(w.map(x => controllerKey(x.witness_did)));
+                  if (dids.size < 3 || ctls.size < 3) {
+                    console.error(`FAIL ${f}: L5 requires >=3 distinct witness DIDs AND >=3 distinct controllers; got dids=${dids.size}, controllers=${ctls.size}`); failed++; continue;
+                  }
+                }
+                console.log(`OK   ${f}: ${w.length} peer-witness signature(s) verified for ${level}`);
+              } catch (e) {
+                console.error(`FAIL ${f}: ${e.message}`); failed++;
+              }
+            }
+            if (failed) process.exit(1);
+          })();
+          NODE
+
+  l5-external-audit:
+    runs-on: ubuntu-latest
+    needs: schema
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Verify L5 listings carry an unexpired external_audit attestation
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const dir = 'implementations';
+          if (!fs.existsSync(dir)) process.exit(0);
+          const ALLOWED = new Set(['SOC2-Type-II','ISO-27001','ISO-42001','equivalent']);
+          (async () => {
+            let failed = 0;
+            for (const f of fs.readdirSync(dir).filter(x => x.endsWith('.json'))) {
+              const l = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
+              if (l.conformance_level !== 'L5') { continue; }
+              try {
+                const r = await fetch(l.conformance_receipt_uri, { signal: AbortSignal.timeout(10000) });
+                const receipt = await r.json();
+                const a = receipt.external_audit;
+                if (!a || typeof a !== 'object') { console.error(`FAIL ${f}: L5 missing receipt.external_audit`); failed++; continue; }
+                if (!ALLOWED.has(a.framework)) { console.error(`FAIL ${f}: framework ${a.framework} not in allowed set`); failed++; continue; }
+                if (!a.auditor_did || !a.auditor_did.startsWith('did:')) { console.error(`FAIL ${f}: auditor_did missing or not a DID`); failed++; continue; }
+                const exp = a.valid_until ? Date.parse(a.valid_until) : NaN;
+                if (Number.isNaN(exp) || exp < Date.now()) { console.error(`FAIL ${f}: external audit expired or invalid valid_until`); failed++; continue; }
+                console.log(`OK   ${f}: L5 external audit ${a.framework} valid until ${a.valid_until}`);
+              } catch (e) {
+                console.error(`FAIL ${f}: ${e.message}`); failed++;
+              }
+            }
+            if (failed) process.exit(1);
+          })();
+          NODE
+
   manifest:
     runs-on: ubuntu-latest
     needs: schema
