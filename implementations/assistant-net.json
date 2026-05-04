@@ -1,0 +1,18 @@
+{
+  "slug": "assistant-net",
+  "name": "AssistNet",
+  "tool_did": "did:web:assistant-net.vercel.app",
+  "manifest_uri": "https://assistant-net.vercel.app/.well-known/oap-tool.json",
+  "conformance_level": "L1-NC",
+  "conformance_receipt_uri": "https://assistant-net.vercel.app/oap-conformance-receipt.json",
+  "conformance_receipt_sha256": "2689481cb19283e7e3e04f191022bae4f1199256bb6a5b4f338f10289f111a6d",
+  "issued_at": "2026-05-04T10:34:47.660Z",
+  "expires_at": "2026-08-02T10:34:47.660Z",
+  "open_source": "https://github.com/Till-Fengler/AssistNet",
+  "license": "Apache-2.0",
+  "non_commercial": true,
+  "provisional": true,
+  "contact": "till@beep-technologies.de",
+  "categories": ["assistant-network", "calendar", "messaging", "crm"],
+  "jurisdictions": ["DE", "EU"]
+}
