@@ -30,10 +30,15 @@ jobs:
           addFormats(ajv);
           const implSchema = JSON.parse(fs.readFileSync('schemas/implementation.schema.json', 'utf-8'));
           const revSchema = JSON.parse(fs.readFileSync('schemas/revocation.schema.json', 'utf-8'));
+          const wfaSchemaPath = 'schemas/workflow-anchor.schema.json';
+          const wfaSchema = fs.existsSync(wfaSchemaPath)
+            ? JSON.parse(fs.readFileSync(wfaSchemaPath, 'utf-8'))
+            : null;
           const validators = {
             implementations: ajv.compile(implSchema),
             'peer-witnesses': ajv.compile(implSchema),
             revocations: ajv.compile(revSchema),
+            ...(wfaSchema ? { 'workflow-anchors': ajv.compile(wfaSchema) } : {}),
           };
           let failed = 0;
           for (const dir of Object.keys(validators)) {

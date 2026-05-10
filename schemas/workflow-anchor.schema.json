@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openagentprotocol.eu/registry/schemas/workflow-anchor.schema.json",
+  "title": "OAP Workflow Anchor Entry",
+  "description": "Append only anchor entry for a closed high stakes Cross Broker Workflow under RFC 0035 section 4.6. The anchor records the Cross Match Receipt hash and the Merkle root of the meta registry at anchor time. The Cross Match Receipt itself is hosted by the workflow coordinator; this entry is the public commitment that no retroactive rewrite of the receipt is possible.",
+  "type": "object",
+  "required": [
+    "slug",
+    "workflow_id",
+    "workflow_manifest_id",
+    "workflow_type",
+    "coordinator_did",
+    "cross_match_receipt_uri",
+    "cross_match_receipt_sha256",
+    "anchored_at",
+    "merkle_root"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$" },
+    "workflow_id": { "type": "string", "pattern": "^wf_[0-9A-HJKMNP-TV-Z]{26}$" },
+    "workflow_manifest_id": { "type": "string", "pattern": "^wfm_[0-9A-HJKMNP-TV-Z]{26}$" },
+    "workflow_type": { "type": "string" },
+    "coordinator_did": { "type": "string", "pattern": "^did:" },
+    "failover_coordinator_did": { "type": "string", "pattern": "^did:" },
+    "cross_match_receipt_uri": { "type": "string", "format": "uri" },
+    "cross_match_receipt_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "anchored_at": { "type": "string", "format": "date-time" },
+    "merkle_root": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "consistency_proof_to_prev": { "type": "string" },
+    "jurisdictions": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z]{2}$" } },
+    "is_high_stakes": { "type": "boolean" }
+  }
+}

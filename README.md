@@ -14,8 +14,10 @@ There is no certification authority. There is no fee. There is no application pr
 implementations/<slug>.json              one file per implementation
 revocations/<slug>-<receipt-hash>.json   one file per revocation event (see revocations/README.md)
 peer-witnesses/<witness-slug>.json       optional witness directory
+workflow-anchors/<slug>.json             append-only anchors for closed high-stakes Cross Broker Workflows (RFC 0035 Section 4.6)
 schemas/implementation.schema.json       JSON Schema for listings
 schemas/revocation.schema.json           JSON Schema for revocation entries
+schemas/workflow-anchor.schema.json      JSON Schema for workflow anchors
 .github/workflows/validate.yml           CI gate (RFC 0026 Section 6)
 ```
 
